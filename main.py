@@ -1,9 +1,9 @@
 """
 Main — Radar Crypto PRO
-Loop principal del bot
 """
 import asyncio
 import logging
+import os
 import time
 from datetime import datetime, timezone, timedelta
 from telegram.ext import Application, CommandHandler
@@ -12,23 +12,16 @@ from state import load_state, save_state, load_config
 from btc_monitor import verificar_btc, btc_esta_bloqueado
 from horario import esta_habilitado, motivo_bloqueo
 from scanner import escanear_todos
-from trader import (
-    abrir_operacion, verificar_operaciones,
-    verificar_tiempo_sin_entrada, cerrar_todo_por_btc
-)
+from trader import abrir_operacion, verificar_operaciones, verificar_tiempo_sin_entrada
 from telegram_bot import (
     notificar, cmd_start, cmd_estado, cmd_operaciones,
     cmd_stats, cmd_resumen, cmd_config, cmd_capital,
     cmd_operacion, cmd_ayuda
 )
 
-logging.basicConfig(
-    format="%(asctime)s — %(levelname)s — %(message)s",
-    level=logging.INFO
-)
+logging.basicConfig(format="%(asctime)s — %(levelname)s — %(message)s", level=logging.INFO)
 log = logging.getLogger(__name__)
 
-import os
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 
 INTERVALO_PRECIOS  = 30
@@ -42,7 +35,7 @@ ultimo_cancelar = 0
 ultimo_resumen  = ""
 
 
-async def loop_principal():
+async def loop_principal(app):
     global ultimo_escaneo, ultimo_btc, ultimo_cancelar, ultimo_resumen
 
     log.info("Radar Crypto PRO iniciado")
@@ -54,31 +47,30 @@ async def loop_principal():
             state = load_state()
 
             if ahora - ultimo_btc >= INTERVALO_BTC:
-                log.info("[BTC] Verificando...")
-                verificar_btc(state, lambda msg: asyncio.ensure_future(notificar(msg)))
+                verificar_btc(state, notificar)
                 ultimo_btc = ahora
 
-            verificar_operaciones(state, lambda msg: asyncio.ensure_future(notificar(msg)))
+            verificar_operaciones(state, notificar)
 
             if ahora - ultimo_cancelar >= INTERVALO_CANCELAR:
-                verificar_tiempo_sin_entrada(state, lambda msg: asyncio.ensure_future(notificar(msg)))
+                verificar_tiempo_sin_entrada(state, notificar)
                 ultimo_cancelar = ahora
 
             if ahora - ultimo_escaneo >= INTERVALO_ESCANEO:
                 if btc_esta_bloqueado(state):
                     log.info("[SCAN] Bloqueado por BTC")
                 elif not esta_habilitado():
-                    log.info(f"[SCAN] Bloqueado por horario")
+                    log.info("[SCAN] Bloqueado por horario")
                 else:
                     log.info("[SCAN] Iniciando escaneo...")
-                    await notificar("🔍 *Iniciando escaneo de mercado...*")
+                    await notificar("🔍 *Iniciando escaneo...*")
                     señales = escanear_todos(state)
                     if señales:
                         for s in señales:
                             state = load_state()
-                            abrir_operacion(state, s, lambda msg: asyncio.ensure_future(notificar(msg)))
+                            abrir_operacion(state, s, notificar)
                     else:
-                        await notificar("🔍 Escaneo completado — Sin señales en este ciclo")
+                        await notificar("🔍 Sin señales en este ciclo")
                 ultimo_escaneo = ahora
 
             ahora_arg = datetime.now(timezone.utc) - timedelta(hours=3)
@@ -98,8 +90,7 @@ async def enviar_resumen_diario(state):
     ahora = datetime.now(timezone.utc)
     inicio = ahora.replace(hour=0, minute=0, second=0, microsecond=0)
     ops = [o for o in state["operaciones"]
-           if o.get("ts_cierre") and
-           datetime.fromisoformat(o["ts_cierre"]) >= inicio]
+           if o.get("ts_cierre") and datetime.fromisoformat(o["ts_cierre"]) >= inicio]
     wins   = [o for o in ops if o["estado"] == "tp"]
     losses = [o for o in ops if o["estado"] == "sl"]
     gan    = sum(o.get("resultado", 0) for o in wins)
@@ -132,13 +123,14 @@ async def main():
     app.add_handler(CommandHandler("operacion",   cmd_operacion))
     app.add_handler(CommandHandler("ayuda",       cmd_ayuda))
 
-    async with app:
-        await app.start()
-        await app.updater.start_polling(drop_pending_updates=True)
-        log.info("[TELEGRAM] Escuchando comandos...")
-        await loop_principal()
-        await app.updater.stop()
-        await app.stop()
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling(drop_pending_updates=True)
+    log.info("[TELEGRAM] Bot escuchando comandos...")
+    await loop_principal(app)
+    await app.updater.stop()
+    await app.stop()
+    await app.shutdown()
 
 
 if __name__ == "__main__":

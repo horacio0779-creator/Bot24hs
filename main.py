@@ -72,6 +72,8 @@ def worker():
             if ahora_arg.hour == 18 and ahora_arg.minute < 5 and ultimo_resumen != clave:
                 ultimo_resumen = clave
                 enviar_resumen_diario(state)
+                if ahora_arg.weekday() == 4:
+                    enviar_resumen_semanal(state)
 
             time.sleep(INTERVALO_PRECIOS)
 
@@ -117,3 +119,30 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+def enviar_resumen_semanal(state):
+    from datetime import datetime, timezone, timedelta
+    ahora = datetime.now(timezone.utc)
+    inicio_semana = ahora - timedelta(days=ahora.weekday())
+    inicio_semana = inicio_semana.replace(hour=0, minute=0, second=0, microsecond=0)
+    ops = [o for o in state["operaciones"]
+           if o.get("ts_cierre") and datetime.fromisoformat(o["ts_cierre"]) >= inicio_semana]
+    wins   = [o for o in ops if o["estado"] == "tp"]
+    losses = [o for o in ops if o["estado"] == "sl"]
+    gan    = sum(o.get("resultado", 0) for o in wins)
+    per    = sum(o.get("resultado", 0) for o in losses)
+    neto   = round(gan + per, 4)
+    wr     = f"{len(wins)/(len(wins)+len(losses))*100:.1f}%" if ops else "—"
+    config = load_config()
+    capital_actual = config["capital"] + state["resultado"]
+    notificar(f"""
+📈 *RESUMEN SEMANAL — {ahora.strftime('%d/%m/%Y')}*
+
+✅ Ganadas: {len(wins)} (+${round(gan,4)} USDT)
+❌ Perdidas: {len(losses)} (${round(per,4)} USDT)
+🏁 Total operaciones: {len(ops)}
+🎯 Win Rate: {wr}
+📈 Neto: {'+'if neto>=0 else ''}${neto} USDT
+💵 Capital actual: ${round(capital_actual,2)} USDT
+""")

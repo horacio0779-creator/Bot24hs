@@ -5,12 +5,13 @@ import asyncio
 import logging
 import os
 import time
+import threading
 from datetime import datetime, timezone, timedelta
 from telegram.ext import Application, CommandHandler
 
-from state import load_state, save_state, load_config
+from state import load_state, load_config
 from btc_monitor import verificar_btc, btc_esta_bloqueado
-from horario import esta_habilitado, motivo_bloqueo
+from horario import esta_habilitado
 from scanner import escanear_todos
 from trader import abrir_operacion, verificar_operaciones, verificar_tiempo_sin_entrada
 from telegram_bot import (
@@ -34,12 +35,20 @@ ultimo_btc      = 0
 ultimo_cancelar = 0
 ultimo_resumen  = ""
 
+loop = None
 
-async def loop_principal(app):
+
+def notificar_sync(msg):
+    if loop:
+        asyncio.run_coroutine_threadsafe(notificar(msg), loop)
+
+
+def worker():
     global ultimo_escaneo, ultimo_btc, ultimo_cancelar, ultimo_resumen
 
-    log.info("Radar Crypto PRO iniciado")
-    await notificar("🛰️ *Radar Crypto PRO iniciado*\nMonitoreando el mercado 24/7...")
+    # Esperar que el loop esté listo
+    time.sleep(5)
+    notificar_sync("🛰️ *Radar Crypto PRO iniciado*\nMonitoreando el mercado 24/7...")
 
     while True:
         try:
@@ -47,13 +56,13 @@ async def loop_principal(app):
             state = load_state()
 
             if ahora - ultimo_btc >= INTERVALO_BTC:
-                verificar_btc(state, notificar)
+                verificar_btc(state, notificar_sync)
                 ultimo_btc = ahora
 
-            verificar_operaciones(state, notificar)
+            verificar_operaciones(state, notificar_sync)
 
             if ahora - ultimo_cancelar >= INTERVALO_CANCELAR:
-                verificar_tiempo_sin_entrada(state, notificar)
+                verificar_tiempo_sin_entrada(state, notificar_sync)
                 ultimo_cancelar = ahora
 
             if ahora - ultimo_escaneo >= INTERVALO_ESCANEO:
@@ -63,30 +72,30 @@ async def loop_principal(app):
                     log.info("[SCAN] Bloqueado por horario")
                 else:
                     log.info("[SCAN] Iniciando escaneo...")
-                    await notificar("🔍 *Iniciando escaneo...*")
+                    notificar_sync("🔍 *Iniciando escaneo...*")
                     señales = escanear_todos(state)
                     if señales:
                         for s in señales:
                             state = load_state()
-                            abrir_operacion(state, s, notificar)
+                            abrir_operacion(state, s, notificar_sync)
                     else:
-                        await notificar("🔍 Sin señales en este ciclo")
+                        notificar_sync("🔍 Sin señales en este ciclo")
                 ultimo_escaneo = ahora
 
             ahora_arg = datetime.now(timezone.utc) - timedelta(hours=3)
             clave = ahora_arg.strftime("%Y-%m-%d")
             if ahora_arg.hour == 18 and ahora_arg.minute < 5 and ultimo_resumen != clave:
                 ultimo_resumen = clave
-                await enviar_resumen_diario(state)
+                enviar_resumen_sync(state)
 
-            await asyncio.sleep(INTERVALO_PRECIOS)
+            time.sleep(INTERVALO_PRECIOS)
 
         except Exception as e:
             log.error(f"[ERROR] {e}")
-            await asyncio.sleep(60)
+            time.sleep(60)
 
 
-async def enviar_resumen_diario(state):
+def enviar_resumen_sync(state):
     ahora = datetime.now(timezone.utc)
     inicio = ahora.replace(hour=0, minute=0, second=0, microsecond=0)
     ops = [o for o in state["operaciones"]
@@ -99,19 +108,25 @@ async def enviar_resumen_diario(state):
     wr     = f"{len(wins)/(len(wins)+len(losses))*100:.1f}%" if ops else "—"
     config = load_config()
     capital_actual = config["capital"] + state["resultado"]
-    await notificar(f"""
+    notificar_sync(f"""
 📊 *RESUMEN DIARIO — {ahora.strftime('%d/%m/%Y')}*
 
 ✅ Ganadas: {len(wins)} (+${round(gan,4)} USDT)
 ❌ Perdidas: {len(losses)} (${round(per,4)} USDT)
-🏁 Total: {len(ops)}
 🎯 Win Rate: {wr}
 📈 Neto: {'+'if neto>=0 else ''}${neto} USDT
 💵 Capital: ${round(capital_actual,2)} USDT
 """)
 
 
-async def main():
+def main():
+    global loop
+
+    # Iniciar worker en hilo separado
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+
+    # Crear app de Telegram
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start",       cmd_start))
     app.add_handler(CommandHandler("estado",      cmd_estado))
@@ -123,15 +138,10 @@ async def main():
     app.add_handler(CommandHandler("operacion",   cmd_operacion))
     app.add_handler(CommandHandler("ayuda",       cmd_ayuda))
 
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling(drop_pending_updates=True)
-    log.info("[TELEGRAM] Bot escuchando comandos...")
-    await loop_principal(app)
-    await app.updater.stop()
-    await app.stop()
-    await app.shutdown()
+    log.info("[TELEGRAM] Bot iniciado")
+    loop = asyncio.get_event_loop()
+    app.run_polling(drop_pending_updates=True)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

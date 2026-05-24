@@ -1,0 +1,29 @@
+{
+  "capital": 200,
+  "importe_por_operacion": 10,
+  "comision": 0.2,
+  "enfriamiento_horas": 24,
+  "max_horas_sin_entrada": 8,
+  "horario": {
+    "dias": [1, 2, 3, 4],
+    "hora_inicio": 9,
+    "hora_fin": 18,
+    "timezone": "America/Argentina/Buenos_Aires"
+  },
+  "btc": {
+    "adx_minimo": 25,
+    "ema_periodo": 50
+  },
+  "pares": [
+    "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","AVAXUSDT",
+    "SUIUSDT","LINKUSDT","DOTUSDT","NEARUSDT","ARBUSDT",
+    "OPUSDT","AAVEUSDT","INJUSDT","UNIUSDT","APTUSDT",
+    "ATOMUSDT","TAOUSDT","MKRUSDT","RNDRUSDT","FETUSDT",
+    "JUPUSDT","STXUSDT","TIAUSDT","SEIUSDT","WLDUSDT",
+    "LTCUSDT","FILUSDT","EIGENUSDT","ENAUSDT","POLUSDT"
+  ],
+  "lista_negra": [
+    "XRPUSDT","TRXUSDT","SHIBUSDT","XLMUSDT","TONUSDT",
+    "HBARUSDT","VETUSDT","ADAUSDT","DOGEUSDT","MATICUSDT"
+  ]
+}

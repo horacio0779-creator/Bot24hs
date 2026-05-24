@@ -6,6 +6,7 @@ import os
 import time
 import threading
 from datetime import datetime, timezone, timedelta
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 from state import load_state, load_config
 from btc_monitor import verificar_btc, btc_esta_bloqueado
@@ -27,6 +28,22 @@ ultimo_btc      = 0
 ultimo_cancelar = 0
 ultimo_resumen  = ""
 ultimo_resumen_semanal = ""
+
+
+# ── Servidor web para mantener vivo en Render ──
+class PingHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Radar Crypto PRO - OK")
+    def log_message(self, format, *args):
+        pass  # silenciar logs del servidor
+
+def iniciar_servidor():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), PingHandler)
+    log.info(f"[SERVER] Servidor web en puerto {port}")
+    server.serve_forever()
 
 
 def worker():
@@ -99,8 +116,9 @@ def enviar_resumen_diario(state):
     wr     = f"{len(wins)/(len(wins)+len(losses))*100:.1f}%" if ops else "—"
     config = load_config()
     capital_actual = round(config["capital"] + state["resultado"], 2)
+    ahora_arg = datetime.now(timezone.utc) - timedelta(hours=3)
     notificar(f"""
-📊 *RESUMEN DIARIO — {ahora_arg_str()}*
+📊 *RESUMEN DIARIO — {ahora_arg.strftime('%d/%m/%Y')}*
 
 ✅ Ganadas: {len(wins)} (+${gan} USDT)
 ❌ Perdidas: {len(losses)} (-${abs(per)} USDT)
@@ -124,8 +142,9 @@ def enviar_resumen_semanal(state):
     wr     = f"{len(wins)/(len(wins)+len(losses))*100:.1f}%" if ops else "—"
     config = load_config()
     capital_actual = round(config["capital"] + state["resultado"], 2)
+    ahora_arg = datetime.now(timezone.utc) - timedelta(hours=3)
     notificar(f"""
-📈 *RESUMEN SEMANAL — {ahora_arg_str()}*
+📈 *RESUMEN SEMANAL — {ahora_arg.strftime('%d/%m/%Y')}*
 
 ✅ Ganadas: {len(wins)} (+${gan} USDT)
 ❌ Perdidas: {len(losses)} (-${abs(per)} USDT)
@@ -136,14 +155,16 @@ def enviar_resumen_semanal(state):
 """)
 
 
-def ahora_arg_str():
-    ahora_arg = datetime.now(timezone.utc) - timedelta(hours=3)
-    return ahora_arg.strftime("%d/%m/%Y")
-
-
 def main():
-    t = threading.Thread(target=worker, daemon=True)
-    t.start()
+    # Servidor web para mantener vivo en Render
+    t_server = threading.Thread(target=iniciar_servidor, daemon=True)
+    t_server.start()
+
+    # Worker del bot
+    t_worker = threading.Thread(target=worker, daemon=True)
+    t_worker.start()
+
+    # Telegram polling (bloqueante)
     bot = registrar_comandos()
     log.info("[TELEGRAM] Escuchando comandos...")
     bot.infinity_polling(timeout=30, long_polling_timeout=20)

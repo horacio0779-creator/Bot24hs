@@ -26,10 +26,11 @@ ultimo_escaneo  = 0
 ultimo_btc      = 0
 ultimo_cancelar = 0
 ultimo_resumen  = ""
+ultimo_resumen_semanal = ""
 
 
 def worker():
-    global ultimo_escaneo, ultimo_btc, ultimo_cancelar, ultimo_resumen
+    global ultimo_escaneo, ultimo_btc, ultimo_cancelar, ultimo_resumen, ultimo_resumen_semanal
 
     time.sleep(3)
     log.info("Radar Crypto PRO iniciado")
@@ -58,9 +59,9 @@ def worker():
                 else:
                     log.info("[SCAN] Iniciando escaneo...")
                     notificar("🔍 *Iniciando escaneo...*")
-                    señales = escanear_todos(state)
-                    if señales:
-                        for s in señales:
+                    senales = escanear_todos(state)
+                    if senales:
+                        for s in senales:
                             state = load_state()
                             abrir_operacion(state, s, notificar)
                     else:
@@ -68,12 +69,15 @@ def worker():
                 ultimo_escaneo = ahora
 
             ahora_arg = datetime.now(timezone.utc) - timedelta(hours=3)
-            clave = ahora_arg.strftime("%Y-%m-%d")
-            if ahora_arg.hour == 18 and ahora_arg.minute < 5 and ultimo_resumen != clave:
-                ultimo_resumen = clave
+            clave_dia = ahora_arg.strftime("%Y-%m-%d")
+            if ahora_arg.hour == 18 and ahora_arg.minute < 5 and ultimo_resumen != clave_dia:
+                ultimo_resumen = clave_dia
                 enviar_resumen_diario(state)
-                if ahora_arg.weekday() == 4:
-                    enviar_resumen_semanal(state)
+
+            clave_sem = ahora_arg.strftime("%Y-W%W")
+            if ahora_arg.weekday() == 4 and ahora_arg.hour == 18 and ahora_arg.minute < 5 and ultimo_resumen_semanal != clave_sem:
+                ultimo_resumen_semanal = clave_sem
+                enviar_resumen_semanal(state)
 
             time.sleep(INTERVALO_PRECIOS)
 
@@ -89,40 +93,24 @@ def enviar_resumen_diario(state):
            if o.get("ts_cierre") and datetime.fromisoformat(o["ts_cierre"]) >= inicio]
     wins   = [o for o in ops if o["estado"] == "tp"]
     losses = [o for o in ops if o["estado"] == "sl"]
-    gan    = sum(o.get("resultado", 0) for o in wins)
-    per    = sum(o.get("resultado", 0) for o in losses)
+    gan    = round(sum(o.get("resultado", 0) for o in wins), 4)
+    per    = round(sum(o.get("resultado", 0) for o in losses), 4)
     neto   = round(gan + per, 4)
     wr     = f"{len(wins)/(len(wins)+len(losses))*100:.1f}%" if ops else "—"
     config = load_config()
-    capital_actual = config["capital"] + state["resultado"]
+    capital_actual = round(config["capital"] + state["resultado"], 2)
     notificar(f"""
-📊 *RESUMEN DIARIO — {ahora.strftime('%d/%m/%Y')}*
+📊 *RESUMEN DIARIO — {ahora_arg_str()}*
 
-✅ Ganadas: {len(wins)} (+${round(gan,4)} USDT)
-❌ Perdidas: {len(losses)} (${round(per,4)} USDT)
+✅ Ganadas: {len(wins)} (+${gan} USDT)
+❌ Perdidas: {len(losses)} (-${abs(per)} USDT)
 🎯 Win Rate: {wr}
 📈 Neto: {'+'if neto>=0 else ''}${neto} USDT
-💵 Capital: ${round(capital_actual,2)} USDT
+💵 Capital: ${capital_actual} USDT
 """)
 
 
-def main():
-    # Iniciar worker en hilo separado
-    t = threading.Thread(target=worker, daemon=True)
-    t.start()
-
-    # Iniciar bot de Telegram (bloqueante)
-    bot = registrar_comandos()
-    log.info("[TELEGRAM] Escuchando comandos...")
-    bot.infinity_polling(timeout=30, long_polling_timeout=20)
-
-
-if __name__ == "__main__":
-    main()
-
-
 def enviar_resumen_semanal(state):
-    from datetime import datetime, timezone, timedelta
     ahora = datetime.now(timezone.utc)
     inicio_semana = ahora - timedelta(days=ahora.weekday())
     inicio_semana = inicio_semana.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -130,19 +118,36 @@ def enviar_resumen_semanal(state):
            if o.get("ts_cierre") and datetime.fromisoformat(o["ts_cierre"]) >= inicio_semana]
     wins   = [o for o in ops if o["estado"] == "tp"]
     losses = [o for o in ops if o["estado"] == "sl"]
-    gan    = sum(o.get("resultado", 0) for o in wins)
-    per    = sum(o.get("resultado", 0) for o in losses)
+    gan    = round(sum(o.get("resultado", 0) for o in wins), 4)
+    per    = round(sum(o.get("resultado", 0) for o in losses), 4)
     neto   = round(gan + per, 4)
     wr     = f"{len(wins)/(len(wins)+len(losses))*100:.1f}%" if ops else "—"
     config = load_config()
-    capital_actual = config["capital"] + state["resultado"]
+    capital_actual = round(config["capital"] + state["resultado"], 2)
     notificar(f"""
-📈 *RESUMEN SEMANAL — {ahora.strftime('%d/%m/%Y')}*
+📈 *RESUMEN SEMANAL — {ahora_arg_str()}*
 
-✅ Ganadas: {len(wins)} (+${round(gan,4)} USDT)
-❌ Perdidas: {len(losses)} (${round(per,4)} USDT)
-🏁 Total operaciones: {len(ops)}
+✅ Ganadas: {len(wins)} (+${gan} USDT)
+❌ Perdidas: {len(losses)} (-${abs(per)} USDT)
+🏁 Total: {len(ops)}
 🎯 Win Rate: {wr}
 📈 Neto: {'+'if neto>=0 else ''}${neto} USDT
-💵 Capital actual: ${round(capital_actual,2)} USDT
+💵 Capital: ${capital_actual} USDT
 """)
+
+
+def ahora_arg_str():
+    ahora_arg = datetime.now(timezone.utc) - timedelta(hours=3)
+    return ahora_arg.strftime("%d/%m/%Y")
+
+
+def main():
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    bot = registrar_comandos()
+    log.info("[TELEGRAM] Escuchando comandos...")
+    bot.infinity_polling(timeout=30, long_polling_timeout=20)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,30 +1,26 @@
 """
-Estado del bot — Radar Crypto PRO
-Maneja capital, operaciones, enfriamiento y estadísticas
+Estado — BTC DCA Bot
 """
 import json
 import os
 from datetime import datetime, timezone
 
-STATE_FILE = "state.json"
+STATE_FILE = "state_dca.json"
 
 
 def load_state():
     if os.path.exists(STATE_FILE):
-        with open(STATE_FILE, "r") as f:
+        with open(STATE_FILE) as f:
             return json.load(f)
     return {
-        "capital": 200.0,
-        "resultado": 0.0,
-        "operaciones": [],
-        "enfriamiento": {},
-        "btc_bloqueado": False,
-        "velas_confirmacion": 0,
+        "capital_libre": 200.0,
+        "resultado_total": 0.0,
+        "posicion": None,  # posicion activa
         "stats": {
+            "total_ops": 0,
             "total_wins": 0,
-            "total_losses": 0,
             "ganancia_total": 0.0,
-            "perdida_total": 0.0,
+            "max_recompras_usadas": 0
         }
     }
 
@@ -35,7 +31,7 @@ def save_state(state):
 
 
 def load_config():
-    with open("config.json", "r") as f:
+    with open("config.json") as f:
         return json.load(f)
 
 
@@ -44,78 +40,56 @@ def save_config(config):
         json.dump(config, f, indent=2)
 
 
-def agregar_enfriamiento(state, symbol):
-    state["enfriamiento"][symbol] = datetime.now(timezone.utc).isoformat()
-    save_state(state)
+def capital_en_posicion(state):
+    pos = state.get("posicion")
+    if not pos:
+        return 0.0
+    return sum(e["usdt"] for e in pos["entradas"])
 
 
-def en_enfriamiento(state, symbol):
-    ts = state["enfriamiento"].get(symbol)
-    if not ts:
-        return False
-    desde = datetime.fromisoformat(ts)
-    ahora = datetime.now(timezone.utc)
-    horas = (ahora - desde).total_seconds() / 3600
+def recompras_posibles(state):
     config = load_config()
-    if horas >= config.get("enfriamiento_horas", 24):
-        del state["enfriamiento"][symbol]
-        save_state(state)
-        return False
-    return True
+    entrada = config["entrada_por_compra"]
+    libre = state["capital_libre"]
+    return int(libre // entrada)
 
 
-def tiempo_enfriamiento_restante(state, symbol):
-    ts = state["enfriamiento"].get(symbol)
-    if not ts:
-        return None
-    desde = datetime.fromisoformat(ts)
-    ahora = datetime.now(timezone.utc)
+def resumen(state):
     config = load_config()
-    limite = config.get("enfriamiento_horas", 24) * 3600
-    restante = limite - (ahora - desde).total_seconds()
-    if restante <= 0:
-        return None
-    h = int(restante // 3600)
-    m = int((restante % 3600) // 60)
-    return f"{h}h {m}m"
+    pos = state.get("posicion")
+    en_pos = capital_en_posicion(state)
+    recompras = recompras_posibles(state)
+    capital_total = state["capital_libre"] + en_pos + state["resultado_total"]
 
+    if pos:
+        entradas = pos["entradas"]
+        total_usdt = sum(e["usdt"] for e in entradas)
+        promedio = sum(e["precio"] * e["usdt"] for e in entradas) / total_usdt
+        tp = promedio * (1 + config["tp_pct"] / 100)
+        niveles = len(entradas) - 1
+    else:
+        promedio = tp = total_usdt = 0
+        niveles = 0
 
-def pares_activos(state):
-    return set(
-        op["symbol"] for op in state["operaciones"]
-        if op["estado"] in ["esperando", "activa"]
-    )
-
-
-def get_operacion(state, symbol):
-    for op in state["operaciones"]:
-        if op["symbol"] == symbol and op["estado"] in ["esperando", "activa"]:
-            return op
-    return None
-
-
-def win_rate(state):
     stats = state["stats"]
-    tot = stats["total_wins"] + stats["total_losses"]
-    if tot == 0:
-        return None
-    return stats["total_wins"] / tot * 100
+    wr = stats["total_wins"] / stats["total_ops"] * 100 if stats["total_ops"] > 0 else 0
 
-
-def resumen_stats(state):
-    stats = state["stats"]
-    config = load_config()
-    tot = stats["total_wins"] + stats["total_losses"]
-    wr = f"{stats['total_wins']/tot*100:.1f}%" if tot > 0 else "—"
-    capital_actual = config["capital"] + state["resultado"]
     return {
-        "capital_inicial": config["capital"],
-        "capital_actual": round(capital_actual, 2),
-        "resultado": round(state["resultado"], 2),
-        "wins": stats["total_wins"],
-        "losses": stats["total_losses"],
-        "total": tot,
-        "win_rate": wr,
+        "capital_libre": round(state["capital_libre"], 2),
+        "en_posicion": round(en_pos, 2),
+        "capital_total": round(capital_total, 2),
+        "resultado_total": round(state["resultado_total"], 2),
+        "recompras_posibles": recompras,
+        "en_posicion_activa": pos is not None,
+        "niveles_dca": niveles,
+        "promedio": round(promedio, 2),
+        "tp": round(tp, 2),
+        "total_usdt_pos": round(total_usdt, 2),
+        "total_ops": stats["total_ops"],
+        "total_wins": stats["total_wins"],
         "ganancia_total": round(stats["ganancia_total"], 2),
-        "perdida_total": round(stats["perdida_total"], 2),
+        "win_rate": round(wr, 1),
+        "entrada_por_compra": config["entrada_por_compra"],
+        "recompra_pct": config["recompra_pct"],
+        "tp_pct": config["tp_pct"],
     }

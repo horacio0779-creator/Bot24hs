@@ -1,160 +1,136 @@
 """
-Trader — Radar Crypto PRO (Paper Trading)
-Cierre total 100% en TP o SL — sin parciales
+Trader — BTC DCA Bot
+Lógica de entradas, recompras y TP
 """
+import requests
 from datetime import datetime, timezone
-from binance_api import get_price
-from state import save_state, agregar_enfriamiento, load_config
+from state import load_state, save_state, load_config, capital_en_posicion
+
+BINANCE = "https://api.binance.com"
 
 
-def abrir_operacion(state, señal, notificar):
-    config = load_config()
-    usdt = config["importe_por_operacion"]
-    if state["capital"] < usdt:
-        print(f"[WARN] Capital insuficiente para {señal['symbol']}")
+def get_btc_price():
+    try:
+        r = requests.get(f"{BINANCE}/api/v3/ticker/price", params={"symbol": "BTCUSDT"}, timeout=5)
+        return float(r.json()["price"])
+    except:
         return None
 
-    operacion = {
-        "id":          int(datetime.now(timezone.utc).timestamp() * 1000),
-        "symbol":      señal["symbol"],
-        "indicador":   señal["indicador"],
-        "tipo":        señal["tipo"],
-        "tf":          señal["tf"],
-        "usdt":        usdt,
-        "entrada":     señal["precio"],
-        "sl":          señal["sl"],
-        "tp":          señal["tp"],
-        "be":          señal["be"],
-        "atr":         señal["atr"],
-        "adx":         señal["adx"],
-        "rvol":        señal["rvol"],
-        "vwap":        señal["vwap"],
-        "estado":      "activa",
-        "ts_apertura": datetime.now(timezone.utc).isoformat(),
-        "ts_cierre":   None,
-        "precio_cierre": None,
-        "resultado":   None,
-    }
 
-    state["capital"] -= usdt
-    state["operaciones"].append(operacion)
-    save_state(state)
-
-    notificar(f"""
-🔍 *OPERACIÓN ABIERTA*
-📊 {señal['symbol']} · {señal['indicador']} · {señal['tf']}
-💰 Entrada: `${señal['precio']}`
-🚀 TP: `${señal['tp']}`
-🛑 SL: `${señal['sl']}`
-📈 ADX: {señal['adx']} · Vol: {señal['rvol']}x · VWAP: ✅
-💵 Importe: ${usdt} USDT
-""")
-    return operacion
-
-
-def verificar_operaciones(state, notificar):
+def verificar_posicion(notificar):
+    """Verifica si hay que entrar, recomprar o cerrar"""
+    state = load_state()
     config = load_config()
-    comision = config.get("comision", 0.2)
-    cambios = False
-
-    for op in state["operaciones"]:
-        if op["estado"] != "activa":
-            continue
-        precio = get_price(op["symbol"])
-        if not precio:
-            continue
-
-        if precio >= op["tp"]:
-            cerrar_operacion(state, op, "tp", precio, comision, notificar)
-            cambios = True
-        elif precio <= op["sl"]:
-            cerrar_operacion(state, op, "sl", precio, comision, notificar)
-            cambios = True
-
-    if cambios:
-        save_state(state)
-
-
-def cerrar_operacion(state, op, motivo, precio, comision, notificar):
-    pe = op["entrada"]
-    usdt = op["usdt"]
-    com_venta = usdt * (comision / 200)
-    pnl = round(((precio - pe) / pe) * usdt - com_venta, 4)
-
-    op["estado"]        = "tp" if motivo == "tp" else "sl"
-    op["ts_cierre"]     = datetime.now(timezone.utc).isoformat()
-    op["precio_cierre"] = precio
-    op["resultado"]     = pnl
-
-    state["capital"]   += usdt
-    state["resultado"] += pnl
-
-    stats = state["stats"]
-    if pnl >= 0:
-        stats["total_wins"] += 1
-        stats["ganancia_total"] += pnl
-        emoji = "🚀"; titulo = "TAKE PROFIT"
-    else:
-        stats["total_losses"] += 1
-        stats["perdida_total"] += abs(pnl)
-        emoji = "🛑"; titulo = "STOP LOSS"
-
-    agregar_enfriamiento(state, op["symbol"])
-
-    tot = stats["total_wins"] + stats["total_losses"]
-    wr = f"{stats['total_wins']/tot*100:.1f}%" if tot > 0 else "—"
-
-    notificar(f"""
-{emoji} *{titulo}*
-📊 {op['symbol']} · {op['indicador']}
-💵 Precio cierre: `${precio}`
-📊 Resultado: {'+'if pnl>=0 else ''}${pnl} USDT
-📈 Win Rate: {wr} ({stats['total_wins']}W / {stats['total_losses']}L)
-❄️ {op['symbol']} en enfriamiento 24h
-""")
-
-
-def verificar_tiempo_sin_entrada(state, notificar):
-    config = load_config()
-    max_horas = config.get("max_horas_sin_entrada", 8)
-    ahora = datetime.now(timezone.utc)
-    cambios = False
-
-    for op in state["operaciones"]:
-        if op["estado"] != "activa":
-            continue
-        ts = datetime.fromisoformat(op["ts_apertura"])
-        horas = (ahora - ts).total_seconds() / 3600
-        if horas >= max_horas:
-            op["estado"] = "cancelada"
-            state["capital"] += op["usdt"]
-            cambios = True
-            notificar(f"""
-⏰ *SEÑAL CANCELADA*
-📊 {op['symbol']} · {op['indicador']}
-❌ No llegó al precio en {max_horas}h
-💵 ${op['usdt']} USDT devueltos
-""")
-
-    if cambios:
-        save_state(state)
-
-
-def cerrar_todo_por_btc(state, notificar):
-    config = load_config()
-    comision = config.get("comision", 0.2)
-    activas = [op for op in state["operaciones"] if op["estado"] == "activa"]
-    if not activas:
+    precio = get_btc_price()
+    if not precio:
         return
 
-    for op in activas:
-        precio = get_price(op["symbol"]) or op["entrada"]
-        cerrar_operacion(state, op, "sl", precio, comision, lambda msg: None)
+    entrada = config["entrada_por_compra"]
+    recompra_pct = config["recompra_pct"]
+    tp_pct = config["tp_pct"]
+    com = config["comision"] / 100
 
-    save_state(state)
-    notificar(f"""
-🔴 *BTC CAYÓ BAJO EMA50 — CIERRE DE EMERGENCIA*
-❌ {len(activas)} operación(es) cerrada(s) a mercado
-💵 Todo convertido a USDT
-⏳ Sistema bloqueado hasta recuperación de BTC
+    pos = state.get("posicion")
+
+    # ── Sin posición: entrar ──
+    if not pos:
+        if state["capital_libre"] >= entrada:
+            state["posicion"] = {
+                "entradas": [{"precio": precio, "usdt": entrada, "ts": datetime.now(timezone.utc).isoformat()}],
+                "ts_apertura": datetime.now(timezone.utc).isoformat()
+            }
+            state["capital_libre"] -= entrada
+            save_state(state)
+            notificar(f"""
+₿ *ENTRADA BTC DCA*
+💰 Precio: `${precio:,.0f}`
+💵 Invertido: ${entrada} USDT
+💼 Capital libre: ${round(state['capital_libre'], 2)} USDT
+🔄 Recompras posibles: {int(state['capital_libre'] // entrada)}
 """)
+        return
+
+    entradas = pos["entradas"]
+    total_usdt = sum(e["usdt"] for e in entradas)
+    promedio = sum(e["precio"] * e["usdt"] for e in entradas) / total_usdt
+    tp = promedio * (1 + tp_pct / 100)
+
+    # ── Verificar TP ──
+    if precio >= tp:
+        gan = sum(((tp - e["precio"]) / e["precio"]) * e["usdt"] - e["usdt"] * (com / 2) for e in entradas)
+        gan = round(gan, 4)
+
+        state["capital_libre"] += total_usdt + gan
+        state["resultado_total"] += gan
+        state["posicion"] = None
+
+        stats = state["stats"]
+        stats["total_ops"] += 1
+        stats["total_wins"] += 1
+        stats["ganancia_total"] += gan
+        stats["max_recompras_usadas"] = max(stats["max_recompras_usadas"], len(entradas) - 1)
+        save_state(state)
+
+        notificar(f"""
+✅ *TAKE PROFIT BTC*
+💰 TP alcanzado: `${tp:,.0f}`
+📊 Promedio fue: `${promedio:,.0f}`
+🔄 Recompras usadas: {len(entradas)-1}
+💵 Ganancia: +${gan} USDT
+📈 Total ganado: +${round(state['resultado_total'],2)} USDT
+💼 Capital libre: ${round(state['capital_libre'],2)} USDT
+""")
+        return
+
+    # ── Verificar recompra ──
+    precio_entrada1 = entradas[0]["precio"]
+    nivel_actual = len(entradas) - 1
+    umbral_recompra = precio_entrada1 * (1 - (recompra_pct / 100) * (nivel_actual + 1))
+
+    if precio <= umbral_recompra and state["capital_libre"] >= entrada:
+        entradas.append({"precio": precio, "usdt": entrada, "ts": datetime.now(timezone.utc).isoformat()})
+        state["capital_libre"] -= entrada
+
+        # Recalcular promedio y TP nuevo
+        total_u = sum(e["usdt"] for e in entradas)
+        nuevo_prom = sum(e["precio"] * e["usdt"] for e in entradas) / total_u
+        nuevo_tp = nuevo_prom * (1 + tp_pct / 100)
+        caida_desde_entrada = ((precio_entrada1 - precio) / precio_entrada1) * 100
+
+        save_state(state)
+        notificar(f"""
+🔄 *RECOMPRA DCA #{nivel_actual+1}*
+💰 Precio: `${precio:,.0f}`
+📉 Caída desde entrada: -{caida_desde_entrada:.1f}%
+📊 Nuevo promedio: `${nuevo_prom:,.0f}`
+🎯 Nuevo TP: `${nuevo_tp:,.0f}`
+💵 Invertido total: ${round(total_u,2)} USDT
+💼 Capital libre: ${round(state['capital_libre'],2)} USDT
+🔄 Recompras posibles: {int(state['capital_libre'] // entrada)}
+""")
+
+
+def estado_posicion(state):
+    """Retorna info de la posición activa"""
+    config = load_config()
+    pos = state.get("posicion")
+    if not pos:
+        return None
+    precio = get_btc_price() or 0
+    entradas = pos["entradas"]
+    total_usdt = sum(e["usdt"] for e in entradas)
+    promedio = sum(e["precio"] * e["usdt"] for e in entradas) / total_usdt
+    tp = promedio * (1 + config["tp_pct"] / 100)
+    pnl_actual = ((precio - promedio) / promedio) * total_usdt if precio > 0 else 0
+    caida = ((entradas[0]["precio"] - precio) / entradas[0]["precio"]) * 100 if precio > 0 else 0
+    return {
+        "precio_actual": precio,
+        "precio_entrada1": entradas[0]["precio"],
+        "promedio": round(promedio, 0),
+        "tp": round(tp, 0),
+        "total_usdt": round(total_usdt, 2),
+        "niveles": len(entradas) - 1,
+        "pnl_actual": round(pnl_actual, 4),
+        "caida_pct": round(caida, 1),
+        "pct_al_tp": round(((tp - precio) / precio) * 100, 2) if precio > 0 else 0,
+    }

@@ -1,15 +1,13 @@
 """
-Telegram Bot — Radar Crypto PRO
-Usando pyTelegramBotAPI (telebot) — compatible con Python 3.11+
+Telegram Bot — BTC DCA Bot
 """
 import os
 import telebot
-from state import load_state, save_state, load_config, save_config, resumen_stats
-from horario import esta_habilitado, motivo_bloqueo
-from btc_monitor import btc_esta_bloqueado
+from state import load_state, save_state, load_config, save_config, resumen
+from trader import get_btc_price, estado_posicion
 
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
-CHAT_ID        = os.environ.get("TELEGRAM_CHAT_ID", "")
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN_DCA", "")
+CHAT_ID        = os.environ.get("TELEGRAM_CHAT_ID_DCA", "")
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
@@ -18,162 +16,162 @@ def notificar(texto):
     try:
         bot.send_message(CHAT_ID, texto, parse_mode="Markdown")
     except Exception as e:
-        print(f"[TELEGRAM] Error: {e}")
+        print(f"[TELEGRAM] {e}")
 
 
 def registrar_comandos():
 
-    @bot.message_handler(commands=["start"])
+    @bot.message_handler(commands=["start", "ayuda"])
     def cmd_start(msg):
         bot.reply_to(msg, """
-🛰️ *Radar Crypto PRO — Activo*
+₿ *BTC DCA Bot — Activo*
 
-/estado — Estado del sistema
-/operaciones — Operaciones activas
-/stats — Estadísticas
-/resumen — Resumen del día
-/config — Configuración actual
-/capital [monto] — Modificar capital
-/operacion [monto] — Modificar importe
-/ayuda — Todos los comandos
+/estado — Capital y márgenes
+/posicion — Posición activa detallada
+/stats — Estadísticas generales
+/config — Ver configuración
+/capital [monto] — Cambiar capital
+/entrada [monto] — Cambiar entrada por compra
+/tp [pct] — Cambiar TP %
+/recompra [pct] — Cambiar % de recompra
+/ayuda — Este menú
 """, parse_mode="Markdown")
 
     @bot.message_handler(commands=["estado"])
     def cmd_estado(msg):
         state = load_state()
-        config = load_config()
-        btc_bloq = btc_esta_bloqueado(state)
-        hor_ok = esta_habilitado()
-        activas = [o for o in state["operaciones"] if o["estado"] == "activa"]
-        capital_actual = config["capital"] + state["resultado"]
+        r = resumen(state)
+        precio = get_btc_price() or 0
+
         bot.reply_to(msg, f"""
-📡 *ESTADO DEL SISTEMA*
+₿ *ESTADO BTC DCA*
 
-{'🔴 BTC BLOQUEADO' if btc_bloq else '🟢 BTC OK'}
-{'🟢 Horario habilitado' if hor_ok else '🔴 ' + motivo_bloqueo()}
+💰 BTC precio actual: `${precio:,.0f}`
 
-💰 Capital inicial: ${config['capital']} USDT
-📈 Resultado: {'+'if state['resultado']>=0 else ''}${round(state['resultado'],2)} USDT
-💵 Capital actual: ${round(capital_actual,2)} USDT
-📋 Operaciones activas: {len(activas)}
-⚡ Por operación: ${config['importe_por_operacion']} USDT
+💼 Capital libre: ${r['capital_libre']} USDT
+📊 En posición: ${r['en_posicion']} USDT
+💵 Capital total: ${r['capital_total']} USDT
+📈 Resultado acumulado: {'+'if r['resultado_total']>=0 else ''}${r['resultado_total']} USDT
+
+🔄 Recompras posibles: {r['recompras_posibles']} (${r['entrada_por_compra']} c/u)
+{'📋 Posición activa: Sí — DCA nivel '+str(r['niveles_dca']) if r['en_posicion_activa'] else '📋 Sin posición activa'}
 """, parse_mode="Markdown")
 
-    @bot.message_handler(commands=["operaciones"])
-    def cmd_operaciones(msg):
+    @bot.message_handler(commands=["posicion"])
+    def cmd_posicion(msg):
         state = load_state()
-        activas = [o for o in state["operaciones"] if o["estado"] == "activa"]
-        if not activas:
-            bot.reply_to(msg, "📋 No hay operaciones activas.")
+        config = load_config()
+        pos = estado_posicion(state)
+
+        if not pos:
+            bot.reply_to(msg, "📋 No hay posición activa en este momento.")
             return
-        texto = "📋 *OPERACIONES ACTIVAS*\n\n"
-        for op in activas:
-            tp1_txt = "✅" if op["tp1_alcanzado"] else "⏳"
-            texto += f"*{op['symbol']}* · {op['indicador']}\n"
-            texto += f"💰 Entrada: `${op['entrada']}` · TP1: {tp1_txt}\n"
-            texto += f"🚀 TP: `${op['tp']}` · 🛑 SL: `${op['sl']}`\n\n"
-        bot.reply_to(msg, texto, parse_mode="Markdown")
+
+        bot.reply_to(msg, f"""
+₿ *POSICIÓN ACTIVA BTC*
+
+💰 Precio actual: `${pos['precio_actual']:,.0f}`
+📥 Entrada inicial: `${pos['precio_entrada1']:,.0f}`
+📊 Promedio: `${pos['promedio']:,.0f}`
+🎯 TP objetivo: `${pos['tp']:,.0f}`
+📈 Falta para TP: +{pos['pct_al_tp']}%
+
+📉 Caída desde entrada: -{pos['caida_pct']}%
+🔄 Recompras hechas: {pos['niveles']}
+💵 Capital en posición: ${pos['total_usdt']} USDT
+📊 PnL actual: {'+'if pos['pnl_actual']>=0 else ''}${pos['pnl_actual']} USDT
+""", parse_mode="Markdown")
 
     @bot.message_handler(commands=["stats"])
     def cmd_stats(msg):
         state = load_state()
-        s = resumen_stats(state)
+        r = resumen(state)
         bot.reply_to(msg, f"""
 📊 *ESTADÍSTICAS*
 
-💰 Capital inicial: ${s['capital_inicial']} USDT
-💵 Capital actual: ${s['capital_actual']} USDT
-📈 Resultado: {'+'if s['resultado']>=0 else ''}${s['resultado']} USDT
-
-✅ Ganadas: {s['wins']} (+${s['ganancia_total']} USDT)
-❌ Perdidas: {s['losses']} (-${s['perdida_total']} USDT)
-🎯 Win Rate: {s['win_rate']}
-""", parse_mode="Markdown")
-
-    @bot.message_handler(commands=["resumen"])
-    def cmd_resumen(msg):
-        from datetime import datetime, timezone
-        state = load_state()
-        ahora = datetime.now(timezone.utc)
-        inicio = ahora.replace(hour=0, minute=0, second=0, microsecond=0)
-        ops = [o for o in state["operaciones"]
-               if o.get("ts_cierre") and
-               datetime.fromisoformat(o["ts_cierre"]) >= inicio]
-        wins   = [o for o in ops if o["estado"] == "tp"]
-        losses = [o for o in ops if o["estado"] == "sl"]
-        gan    = sum(o.get("resultado", 0) for o in wins)
-        per    = sum(o.get("resultado", 0) for o in losses)
-        neto   = round(gan + per, 4)
-        wr     = f"{len(wins)/(len(wins)+len(losses))*100:.1f}%" if ops else "—"
-        bot.reply_to(msg, f"""
-📊 *RESUMEN HOY*
-
-✅ Ganadas: {len(wins)} (+${round(gan,4)} USDT)
-❌ Perdidas: {len(losses)} (${round(per,4)} USDT)
-🎯 Win Rate: {wr}
-📈 Neto: {'+'if neto>=0 else ''}${neto} USDT
+🏁 Operaciones cerradas: {r['total_ops']}
+✅ Ganadas: {r['total_wins']}
+🎯 Win Rate: {r['win_rate']}%
+💵 Ganancia total: +${r['ganancia_total']} USDT
+📈 Capital total: ${r['capital_total']} USDT
 """, parse_mode="Markdown")
 
     @bot.message_handler(commands=["config"])
     def cmd_config(msg):
         config = load_config()
+        state = load_state()
+        r = resumen(state)
         bot.reply_to(msg, f"""
 ⚙️ *CONFIGURACIÓN*
 
 💰 Capital: ${config['capital']} USDT
-⚡ Por operación: ${config['importe_por_operacion']} USDT
+⚡ Entrada por compra: ${config['entrada_por_compra']} USDT
+🔄 Recompra cada: {config['recompra_pct']}%
+🎯 TP sobre promedio: {config['tp_pct']}%
 🏷️ Comisión: {config['comision']}%
-❄️ Enfriamiento: {config['enfriamiento_horas']}h
-⏰ Tiempo máx sin entrada: {config['max_horas_sin_entrada']}h
+🔄 Recompras posibles ahora: {r['recompras_posibles']}
 
-/capital [monto] — ej: /capital 500
-/operacion [monto] — ej: /operacion 25
+/capital [monto] · /entrada [monto]
+/tp [pct] · /recompra [pct]
 """, parse_mode="Markdown")
 
     @bot.message_handler(commands=["capital"])
     def cmd_capital(msg):
         try:
             nuevo = float(msg.text.split()[1])
-            if nuevo < 10:
-                bot.reply_to(msg, "❌ Mínimo $10 USDT")
+            if nuevo < 20:
+                bot.reply_to(msg, "❌ Mínimo $20 USDT")
                 return
             config = load_config()
             config["capital"] = nuevo
             save_config(config)
             state = load_state()
-            state["capital"] = nuevo
+            state["capital_libre"] = nuevo
             save_state(state)
             bot.reply_to(msg, f"✅ Capital: *${nuevo} USDT*", parse_mode="Markdown")
         except:
             bot.reply_to(msg, "❌ Uso: /capital 500")
 
-    @bot.message_handler(commands=["operacion"])
-    def cmd_operacion(msg):
+    @bot.message_handler(commands=["entrada"])
+    def cmd_entrada(msg):
         try:
             nuevo = float(msg.text.split()[1])
             if nuevo < 5:
                 bot.reply_to(msg, "❌ Mínimo $5 USDT")
                 return
             config = load_config()
-            config["importe_por_operacion"] = nuevo
+            config["entrada_por_compra"] = nuevo
             save_config(config)
-            bot.reply_to(msg, f"✅ Por operación: *${nuevo} USDT*", parse_mode="Markdown")
+            bot.reply_to(msg, f"✅ Entrada por compra: *${nuevo} USDT*", parse_mode="Markdown")
         except:
-            bot.reply_to(msg, "❌ Uso: /operacion 25")
+            bot.reply_to(msg, "❌ Uso: /entrada 20")
 
-    @bot.message_handler(commands=["ayuda"])
-    def cmd_ayuda(msg):
-        bot.reply_to(msg, """
-📖 *COMANDOS*
+    @bot.message_handler(commands=["tp"])
+    def cmd_tp(msg):
+        try:
+            nuevo = float(msg.text.split()[1])
+            if nuevo < 1 or nuevo > 20:
+                bot.reply_to(msg, "❌ TP entre 1% y 20%")
+                return
+            config = load_config()
+            config["tp_pct"] = nuevo
+            save_config(config)
+            bot.reply_to(msg, f"✅ TP: *{nuevo}% sobre promedio*", parse_mode="Markdown")
+        except:
+            bot.reply_to(msg, "❌ Uso: /tp 4")
 
-/estado — Estado del sistema
-/operaciones — Ver activas
-/stats — Estadísticas generales
-/resumen — Resumen del día
-/config — Ver configuración
-/capital [monto] — Modificar capital
-/operacion [monto] — Modificar importe
-/ayuda — Este menú
-""", parse_mode="Markdown")
+    @bot.message_handler(commands=["recompra"])
+    def cmd_recompra(msg):
+        try:
+            nuevo = float(msg.text.split()[1])
+            if nuevo < 1 or nuevo > 10:
+                bot.reply_to(msg, "❌ Recompra entre 1% y 10%")
+                return
+            config = load_config()
+            config["recompra_pct"] = nuevo
+            save_config(config)
+            bot.reply_to(msg, f"✅ Recompra cada: *{nuevo}% de caída*", parse_mode="Markdown")
+        except:
+            bot.reply_to(msg, "❌ Uso: /recompra 3")
 
     return bot
